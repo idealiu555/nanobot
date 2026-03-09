@@ -12,7 +12,7 @@ from litellm import acompletion
 from loguru import logger
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from nanobot.providers.registry import find_by_model, find_gateway
+from nanobot.providers.registry import find_by_model, find_by_name
 
 # Standard chat-completion message keys.
 _ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"})
@@ -26,29 +26,19 @@ def _short_tool_id() -> str:
 
 class LiteLLMProvider(LLMProvider):
     """
-    LLM provider using LiteLLM for multi-provider support.
-    
-    Supports OpenRouter, Anthropic, OpenAI, Gemini, MiniMax, and many other providers through
-    a unified interface.  Provider-specific logic is driven by the registry
-    (see providers/registry.py) — no if-elif chains needed here.
+    LLM provider using LiteLLM for Anthropic-compatible and GitHub Copilot models.
     """
 
     def __init__(
         self,
         api_key: str | None = None,
         api_base: str | None = None,
-        default_model: str = "anthropic/claude-opus-4-5",
-        extra_headers: dict[str, str] | None = None,
+        default_model: str = "default",
         provider_name: str | None = None,
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
-        self.extra_headers = extra_headers or {}
-
-        # Detect gateway / local deployment.
-        # provider_name (from config key) is the primary signal;
-        # api_key / api_base are fallback for auto-detection.
-        self._gateway = find_gateway(provider_name, api_key, api_base)
+        self.provider_name = provider_name
 
         # Configure environment variables
         if api_key:
@@ -64,41 +54,25 @@ class LiteLLMProvider(LLMProvider):
 
     def _setup_env(self, api_key: str, api_base: str | None, model: str) -> None:
         """Set environment variables based on detected provider."""
-        spec = self._gateway or find_by_model(model)
+        spec = self._spec_for_model(model)
         if not spec:
             return
         if not spec.env_key:
             # OAuth/provider-only specs (for example: openai_codex)
             return
 
-        # Gateway/local overrides existing env; standard provider doesn't
-        if self._gateway:
-            os.environ[spec.env_key] = api_key
-        else:
-            os.environ.setdefault(spec.env_key, api_key)
+        os.environ.setdefault(spec.env_key, api_key)
 
-        # Resolve env_extras placeholders:
-        #   {api_key}  → user's API key
-        #   {api_base} → user's api_base, falling back to spec.default_api_base
-        effective_base = api_base or spec.default_api_base
-        for env_name, env_val in spec.env_extras:
-            resolved = env_val.replace("{api_key}", api_key)
-            resolved = resolved.replace("{api_base}", effective_base)
-            os.environ.setdefault(env_name, resolved)
+    def _spec_for_model(self, model: str) -> Any:
+        """Return the configured provider spec, preferring explicit provider_name."""
+        if self.provider_name:
+            if spec := find_by_name(self.provider_name):
+                return spec
+        return find_by_model(model)
 
     def _resolve_model(self, model: str) -> str:
-        """Resolve model name by applying provider/gateway prefixes."""
-        if self._gateway:
-            # Gateway mode: apply gateway prefix, skip provider-specific prefixes
-            prefix = self._gateway.litellm_prefix
-            if self._gateway.strip_model_prefix:
-                model = model.split("/")[-1]
-            if prefix and not model.startswith(f"{prefix}/"):
-                model = f"{prefix}/{model}"
-            return model
-
-        # Standard mode: auto-prefix for known providers
-        spec = find_by_model(model)
+        """Resolve model name by applying provider prefixes."""
+        spec = self._spec_for_model(model)
         if spec and spec.litellm_prefix:
             model = self._canonicalize_explicit_prefix(model, spec.name, spec.litellm_prefix)
             if not any(model.startswith(s) for s in spec.skip_prefixes):
@@ -118,9 +92,7 @@ class LiteLLMProvider(LLMProvider):
 
     def _supports_cache_control(self, model: str) -> bool:
         """Return True when the provider supports cache_control on content blocks."""
-        if self._gateway is not None:
-            return self._gateway.supports_prompt_caching
-        spec = find_by_model(model)
+        spec = self._spec_for_model(model)
         return spec is not None and spec.supports_prompt_caching
 
     def _apply_cache_control(
@@ -149,21 +121,10 @@ class LiteLLMProvider(LLMProvider):
 
         return new_messages, new_tools
 
-    def _apply_model_overrides(self, model: str, kwargs: dict[str, Any]) -> None:
-        """Apply model-specific parameter overrides from the registry."""
-        model_lower = model.lower()
-        spec = find_by_model(model)
-        if spec:
-            for pattern, overrides in spec.model_overrides:
-                if pattern in model_lower:
-                    kwargs.update(overrides)
-                    return
-
-    @staticmethod
-    def _extra_msg_keys(original_model: str, resolved_model: str) -> frozenset[str]:
+    def _extra_msg_keys(self, original_model: str, resolved_model: str) -> frozenset[str]:
         """Return provider-specific extra keys to preserve in request messages."""
-        spec = find_by_model(original_model) or find_by_model(resolved_model)
-        if (spec and spec.name == "anthropic") or "claude" in original_model.lower() or resolved_model.startswith("anthropic/"):
+        spec = self._spec_for_model(original_model) or self._spec_for_model(resolved_model)
+        if (spec and spec.name == "anthropic_compatible") or "claude" in original_model.lower() or resolved_model.startswith("anthropic/"):
             return _ANTHROPIC_EXTRA_KEYS
         return frozenset()
 
@@ -246,25 +207,18 @@ class LiteLLMProvider(LLMProvider):
             "temperature": temperature,
         }
 
-        # Apply model-specific overrides (e.g. kimi-k2.5 temperature)
-        self._apply_model_overrides(model, kwargs)
-
         # Pass api_key directly — more reliable than env vars alone
         if self.api_key:
             kwargs["api_key"] = self.api_key
 
-        # Pass api_base for custom endpoints
+        # Pass api_base for compatible endpoints
         if self.api_base:
             kwargs["api_base"] = self.api_base
 
-        # Pass extra headers (e.g. APP-Code for AiHubMix)
-        if self.extra_headers:
-            kwargs["extra_headers"] = self.extra_headers
-        
         if reasoning_effort:
             kwargs["reasoning_effort"] = reasoning_effort
             kwargs["drop_params"] = True
-        
+
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"

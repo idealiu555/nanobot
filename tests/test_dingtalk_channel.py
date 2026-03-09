@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 
 import pytest
 
@@ -64,3 +63,10 @@ async def test_group_send_uses_group_messages_api() -> None:
     assert call["url"] == "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
     assert call["json"]["openConversationId"] == "conv123"
     assert call["json"]["msgKey"] == "sampleMarkdown"
+
+
+def test_guess_upload_type_treats_non_image_non_video_as_file() -> None:
+    channel = DingTalkChannel(DingTalkConfig(), MessageBus())
+
+    assert channel._guess_upload_type("report.pdf") == "file"
+    assert channel._guess_upload_type("notes.txt") == "file"

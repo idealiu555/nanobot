@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -131,6 +132,11 @@ def test_get_extension_falls_back_to_original_filename() -> None:
     assert channel._get_extension("file", None, "archive.tar.gz") == ".tar.gz"
 
 
+def test_get_media_type_treats_non_image_files_as_documents() -> None:
+    assert TelegramChannel._get_media_type("report.pdf") == "document"
+    assert TelegramChannel._get_media_type("archive.zip") == "document"
+
+
 def test_is_allowed_accepts_legacy_telegram_id_username_formats() -> None:
     channel = TelegramChannel(TelegramConfig(allow_from=["12345", "alice", "67890|bob"]), MessageBus())
 
@@ -182,3 +188,30 @@ async def test_send_reply_infers_topic_from_message_id_cache() -> None:
 
     assert channel._app.bot.sent_messages[0]["message_thread_id"] == 42
     assert channel._app.bot.sent_messages[0]["reply_parameters"].message_id == 10
+
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_unsupported_message_type() -> None:
+    config = TelegramConfig(enabled=True, token="123:abc", allow_from=["*"])
+    channel = TelegramChannel(config, MessageBus())
+    channel._handle_message = AsyncMock()
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(type="private", is_forum=False),
+        chat_id=123,
+        message_id=1,
+        message_thread_id=None,
+        text=None,
+        caption=None,
+        photo=None,
+        document=None,
+        sticker=SimpleNamespace(file_id="sticker123"),
+    )
+    update = SimpleNamespace(
+        message=message,
+        effective_user=SimpleNamespace(id=42, username="alice", first_name="Alice"),
+    )
+
+    await channel._on_message(update, None)
+
+    channel._handle_message.assert_not_awaited()

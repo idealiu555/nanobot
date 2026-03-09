@@ -55,7 +55,7 @@ class MessageTool(Tool):
                 },
                 "channel": {
                     "type": "string",
-                    "description": "Optional: target channel (telegram, discord, etc.)"
+                    "description": "Optional: target channel (telegram, qq, etc.)"
                 },
                 "chat_id": {
                     "type": "string",
@@ -64,7 +64,7 @@ class MessageTool(Tool):
                 "media": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional: list of file paths to attach (images, audio, documents)"
+                    "description": "Optional: list of file paths to attach (images, documents)"
                 }
             },
             "required": ["content"]

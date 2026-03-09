@@ -23,7 +23,7 @@ async def test_start_is_idempotent(tmp_path) -> None:
     service = HeartbeatService(
         workspace=tmp_path,
         provider=provider,
-        model="openai/gpt-4o-mini",
+        model="anthropic/claude-3-5-sonnet",
         interval_s=9999,
         enabled=True,
     )
@@ -44,7 +44,7 @@ async def test_decide_returns_skip_when_no_tool_call(tmp_path) -> None:
     service = HeartbeatService(
         workspace=tmp_path,
         provider=provider,
-        model="openai/gpt-4o-mini",
+        model="anthropic/claude-3-5-sonnet",
     )
 
     action, tasks = await service._decide("heartbeat content")
@@ -78,7 +78,7 @@ async def test_trigger_now_executes_when_decision_is_run(tmp_path) -> None:
     service = HeartbeatService(
         workspace=tmp_path,
         provider=provider,
-        model="openai/gpt-4o-mini",
+        model="anthropic/claude-3-5-sonnet",
         on_execute=_on_execute,
     )
 
@@ -110,7 +110,7 @@ async def test_trigger_now_returns_none_when_decision_is_skip(tmp_path) -> None:
     service = HeartbeatService(
         workspace=tmp_path,
         provider=provider,
-        model="openai/gpt-4o-mini",
+        model="anthropic/claude-3-5-sonnet",
         on_execute=_on_execute,
     )
 

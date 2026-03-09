@@ -168,11 +168,9 @@ class TelegramChannel(BaseChannel):
         self,
         config: TelegramConfig,
         bus: MessageBus,
-        groq_api_key: str = "",
     ):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
-        self.groq_api_key = groq_api_key
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
@@ -225,11 +223,10 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CommandHandler("stop", self._forward_command))
         self._app.add_handler(CommandHandler("help", self._on_help))
 
-        # Add message handler for text, photos, voice, documents
+        # Add message handler for text, photos, and documents
         self._app.add_handler(
             MessageHandler(
-                (filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO | filters.Document.ALL)
-                & ~filters.COMMAND,
+                (filters.TEXT | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND,
                 self._on_message
             )
         )
@@ -286,10 +283,6 @@ class TelegramChannel(BaseChannel):
         ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
         if ext in ("jpg", "jpeg", "png", "gif", "webp"):
             return "photo"
-        if ext == "ogg":
-            return "voice"
-        if ext in ("mp3", "m4a", "wav", "aac"):
-            return "audio"
         return "document"
 
     async def send(self, msg: OutboundMessage) -> None:
@@ -329,10 +322,8 @@ class TelegramChannel(BaseChannel):
                 media_type = self._get_media_type(media_path)
                 sender = {
                     "photo": self._app.bot.send_photo,
-                    "voice": self._app.bot.send_voice,
-                    "audio": self._app.bot.send_audio,
                 }.get(media_type, self._app.bot.send_document)
-                param = "photo" if media_type == "photo" else media_type if media_type in ("voice", "audio") else "document"
+                param = "photo" if media_type == "photo" else "document"
                 with open(media_path, 'rb') as f:
                     await sender(
                         chat_id=chat_id,
@@ -488,7 +479,7 @@ class TelegramChannel(BaseChannel):
         )
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming messages (text, photos, voice, documents)."""
+        """Handle incoming messages (text, photos, documents)."""
         if not update.message or not update.effective_user:
             return
 
@@ -518,15 +509,13 @@ class TelegramChannel(BaseChannel):
         if message.photo:
             media_file = message.photo[-1]  # Largest photo
             media_type = "image"
-        elif message.voice:
-            media_file = message.voice
-            media_type = "voice"
-        elif message.audio:
-            media_file = message.audio
-            media_type = "audio"
         elif message.document:
             media_file = message.document
             media_type = "file"
+
+        if not content_parts and media_file is None:
+            logger.debug("Ignoring unsupported Telegram message type from {}", sender_id)
+            return
 
         # Download media if present
         if media_file and self._app:
@@ -544,18 +533,7 @@ class TelegramChannel(BaseChannel):
 
                 media_paths.append(str(file_path))
 
-                # Handle voice transcription
-                if media_type == "voice" or media_type == "audio":
-                    from nanobot.providers.transcription import GroqTranscriptionProvider
-                    transcriber = GroqTranscriptionProvider(api_key=self.groq_api_key)
-                    transcription = await transcriber.transcribe(file_path)
-                    if transcription:
-                        logger.info("Transcribed {}: {}...", media_type, transcription[:50])
-                        content_parts.append(f"[transcription: {transcription}]")
-                    else:
-                        content_parts.append(f"[{media_type}: {file_path}]")
-                else:
-                    content_parts.append(f"[{media_type}: {file_path}]")
+                content_parts.append(f"[{media_type}: {file_path}]")
 
                 logger.debug("Downloaded {} to {}", media_type, file_path)
             except Exception as e:
@@ -655,12 +633,11 @@ class TelegramChannel(BaseChannel):
         if mime_type:
             ext_map = {
                 "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
-                "audio/ogg": ".ogg", "audio/mpeg": ".mp3", "audio/mp4": ".m4a",
             }
             if mime_type in ext_map:
                 return ext_map[mime_type]
 
-        type_map = {"image": ".jpg", "voice": ".ogg", "audio": ".mp3", "file": ""}
+        type_map = {"image": ".jpg", "file": ""}
         if ext := type_map.get(media_type, ""):
             return ext
 

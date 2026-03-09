@@ -113,7 +113,6 @@ class DingTalkChannel(BaseChannel):
 
     name = "dingtalk"
     _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
-    _AUDIO_EXTS = {".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac"}
     _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 
     def __init__(self, config: DingTalkConfig, bus: MessageBus):
@@ -216,14 +215,15 @@ class DingTalkChannel(BaseChannel):
 
     def _guess_upload_type(self, media_ref: str) -> str:
         ext = Path(urlparse(media_ref).path).suffix.lower()
-        if ext in self._IMAGE_EXTS: return "image"
-        if ext in self._AUDIO_EXTS: return "voice"
-        if ext in self._VIDEO_EXTS: return "video"
+        if ext in self._IMAGE_EXTS:
+            return "image"
+        if ext in self._VIDEO_EXTS:
+            return "video"
         return "file"
 
     def _guess_filename(self, media_ref: str, upload_type: str) -> str:
         name = os.path.basename(urlparse(media_ref).path)
-        return name or {"image": "image.jpg", "voice": "audio.amr", "video": "video.mp4"}.get(upload_type, "file.bin")
+        return name or {"image": "image.jpg", "video": "video.mp4"}.get(upload_type, "file.bin")
 
     async def _read_media_bytes(
         self,
@@ -339,8 +339,10 @@ class DingTalkChannel(BaseChannel):
             if resp.status_code != 200:
                 logger.error("DingTalk send failed msgKey={} status={} body={}", msg_key, resp.status_code, body[:500])
                 return False
-            try: result = resp.json()
-            except Exception: result = {}
+            try:
+                result = resp.json()
+            except Exception:
+                result = {}
             errcode = result.get("errcode")
             if errcode not in (None, 0):
                 logger.error("DingTalk send api error msgKey={} errcode={} body={}", msg_key, errcode, body[:500])

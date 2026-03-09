@@ -203,7 +203,13 @@ def onboard():
     console.print(f"\n{__logo__} nanobot is ready!")
     console.print("\nNext steps:")
     console.print("  1. Add your API key to [cyan]~/.nanobot/config.json[/cyan]")
-    console.print("     Get one at: https://openrouter.ai/keys")
+    console.print(
+        "     Set agents.defaults.provider from provider_name to a supported provider,"
+        " then configure that provider's api_key + api_base."
+    )
+    console.print(
+        "     Also set agents.defaults.model from model_name to a backend-supported model ID."
+    )
     console.print("  2. Chat: [cyan]nanobot agent -m \"Hello!\"[/cyan]")
     console.print("\n[dim]Want chat app integrations? See the repository docs for channel setup.[/dim]")
 
@@ -213,42 +219,98 @@ def onboard():
 
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
-    from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
+    from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
+    from nanobot.providers.registry import PROVIDERS, find_by_name
 
-    model = config.agents.defaults.model
-    provider_name = config.get_provider_name(model)
-    p = config.get_provider(model)
-
-    # OpenAI Codex (OAuth)
-    if provider_name == "openai_codex" or model.startswith("openai-codex/"):
-        return OpenAICodexProvider(default_model=model)
-
-    # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
-    from nanobot.providers.custom_provider import CustomProvider
-    if provider_name == "custom":
-        return CustomProvider(
-            api_key=p.api_key if p else "no-key",
-            api_base=config.get_api_base(model) or "http://localhost:8000/v1",
-            default_model=model,
-        )
-
-    # Azure OpenAI: direct Azure OpenAI endpoint with deployment name
-    if provider_name == "azure_openai":
-        if not p or not p.api_key or not p.api_base:
-            console.print("[red]Error: Azure OpenAI requires api_key and api_base.[/red]")
-            console.print("Set them in ~/.nanobot/config.json under providers.azure_openai section")
-            console.print("Use the model field to specify the deployment name.")
+    def _validate_compatible_provider(provider_name: str, provider_config) -> None:
+        missing: list[str] = []
+        if not provider_config or not provider_config.api_key.strip():
+            missing.append(f"providers.{provider_name}.api_key")
+        if not provider_config or not (provider_config.api_base or "").strip():
+            missing.append(f"providers.{provider_name}.api_base")
+        if missing:
+            console.print(f"[red]Error: Incomplete {provider_name} provider configuration.[/red]")
+            console.print(f"Missing required field(s): {', '.join(missing)}")
+            console.print("Set both fields in ~/.nanobot/config.json or choose a different provider.")
             raise typer.Exit(1)
 
-        return AzureOpenAIProvider(
+    def _validate_compatible_model(provider_name: str, model_name: str) -> None:
+        if model_name.strip() in {"", "model_name"}:
+            console.print(f"[red]Error: Missing model for {provider_name} provider.[/red]")
+            console.print(
+                "Set agents.defaults.model to the backend's native model ID "
+                "(for example: gpt-4o, claude-3-5-sonnet, meta-llama/Llama-3.1-8B-Instruct)."
+            )
+            raise typer.Exit(1)
+
+        if "/" not in model_name:
+            return
+
+        prefix, _ = model_name.split("/", 1)
+        normalized_prefix = prefix.lower().replace("-", "_")
+        reserved_prefixes = {spec.name for spec in PROVIDERS} | {
+            "openai",
+            "anthropic",
+            "custom",
+        }
+        if normalized_prefix not in reserved_prefixes:
+            return
+
+        console.print(f"[red]Error: Invalid model for {provider_name} provider.[/red]")
+        console.print(
+            "Set agents.defaults.model to the backend's native model ID "
+            "(for example: gpt-4o, claude-3-5-sonnet, meta-llama/Llama-3.1-8B-Instruct)."
+        )
+        console.print("Do not use provider prefixes like anthropic/... or openai_compatible/....")
+        raise typer.Exit(1)
+
+    def _validate_selected_provider(provider_name: str) -> None:
+        if provider_name == "provider_name":
+            console.print("[red]Error: Missing provider selection.[/red]")
+            console.print(
+                "Set agents.defaults.provider to one of: openai_compatible, "
+                "anthropic_compatible, openai_codex, github_copilot."
+            )
+            raise typer.Exit(1)
+        if not find_by_name(provider_name):
+            console.print(f"[red]Error: Unknown provider: {provider_name}[/red]")
+            console.print(
+                "Supported providers: openai_compatible, anthropic_compatible, "
+                "openai_codex, github_copilot."
+            )
+            raise typer.Exit(1)
+
+    model = config.agents.defaults.model
+    provider_name = config.agents.defaults.provider.strip()
+    _validate_selected_provider(provider_name)
+    p = getattr(config.providers, provider_name, None)
+
+    # OpenAI Codex (OAuth)
+    if provider_name == "openai_codex":
+        return OpenAICodexProvider(default_model=model)
+
+    # OpenAI-compatible: direct OpenAI-compatible endpoint, bypasses LiteLLM
+    from nanobot.providers.custom_provider import CustomProvider
+    if provider_name == "openai_compatible":
+        _validate_compatible_provider(provider_name, p)
+        _validate_compatible_model(provider_name, model)
+        return CustomProvider(
             api_key=p.api_key,
             api_base=p.api_base,
             default_model=model,
         )
 
-    from nanobot.providers.litellm_provider import LiteLLMProvider
-    from nanobot.providers.registry import find_by_name
+    if provider_name == "anthropic_compatible":
+        _validate_compatible_provider(provider_name, p)
+        _validate_compatible_model(provider_name, model)
+        return LiteLLMProvider(
+            api_key=p.api_key,
+            api_base=p.api_base,
+            default_model=model,
+            provider_name=provider_name,
+        )
+
     spec = find_by_name(provider_name)
     if not model.startswith("bedrock/") and not (p and p.api_key) and not (spec and spec.is_oauth):
         console.print("[red]Error: No API key configured.[/red]")
@@ -257,9 +319,8 @@ def _make_provider(config: Config):
 
     return LiteLLMProvider(
         api_key=p.api_key if p else None,
-        api_base=config.get_api_base(model),
+        api_base=p.api_base if p else None,
         default_model=model,
-        extra_headers=p.extra_headers if p else None,
         provider_name=provider_name,
     )
 
@@ -678,31 +739,6 @@ def channels_status():
     table.add_column("Enabled", style="green")
     table.add_column("Configuration", style="yellow")
 
-    dc = config.channels.discord
-    table.add_row(
-        "Discord",
-        "✓" if dc.enabled else "✗",
-        dc.gateway_url
-    )
-
-    # Feishu
-    fs = config.channels.feishu
-    fs_config = f"app_id: {fs.app_id[:10]}..." if fs.app_id else "[dim]not configured[/dim]"
-    table.add_row(
-        "Feishu",
-        "✓" if fs.enabled else "✗",
-        fs_config
-    )
-
-    # Mochat
-    mc = config.channels.mochat
-    mc_base = mc.base_url or "[dim]not configured[/dim]"
-    table.add_row(
-        "Mochat",
-        "✓" if mc.enabled else "✗",
-        mc_base
-    )
-
     # Telegram
     tg = config.channels.telegram
     tg_config = f"token: {tg.token[:10]}..." if tg.token else "[dim]not configured[/dim]"
@@ -710,15 +746,6 @@ def channels_status():
         "Telegram",
         "✓" if tg.enabled else "✗",
         tg_config
-    )
-
-    # Slack
-    slack = config.channels.slack
-    slack_config = "socket" if slack.app_token and slack.bot_token else "[dim]not configured[/dim]"
-    table.add_row(
-        "Slack",
-        "✓" if slack.enabled else "✗",
-        slack_config
     )
 
     # DingTalk
@@ -782,14 +809,17 @@ def status():
                 continue
             if spec.is_oauth:
                 console.print(f"{spec.label}: [green]✓ (OAuth)[/green]")
-            elif spec.is_local:
-                # Local deployments show api_base instead of api_key
-                if p.api_base:
-                    console.print(f"{spec.label}: [green]✓ {p.api_base}[/green]")
+            elif spec.name in {"openai_compatible", "anthropic_compatible"}:
+                has_key = bool(p.api_key.strip())
+                has_base = bool((p.api_base or "").strip())
+                if has_key and has_base:
+                    console.print(f"{spec.label}: [green]✓[/green]")
+                elif has_key or has_base:
+                    console.print(f"{spec.label}: [yellow]incomplete[/yellow] (requires api_key + api_base)")
                 else:
                     console.print(f"{spec.label}: [dim]not set[/dim]")
             else:
-                has_key = bool(p.api_key)
+                has_key = bool(p.api_key.strip())
                 console.print(f"{spec.label}: {'[green]✓[/green]' if has_key else '[dim]not set[/dim]'}")
 
 

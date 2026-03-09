@@ -2,11 +2,13 @@ import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import click
 import pytest
 from typer.testing import CliRunner
 
-from nanobot.cli.commands import app
+from nanobot.cli.commands import _make_provider, app
 from nanobot.config.schema import Config
+from nanobot.providers.custom_provider import CustomProvider
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.providers.openai_codex_provider import _strip_model_prefix
 from nanobot.providers.registry import find_by_model
@@ -14,7 +16,7 @@ from nanobot.providers.registry import find_by_model
 runner = CliRunner()
 
 
-class _StopGateway(RuntimeError):
+class _StopGatewayError(RuntimeError):
     pass
 
 
@@ -23,7 +25,7 @@ def mock_paths():
     """Mock config/workspace paths for test isolation."""
     with patch("nanobot.config.loader.get_config_path") as mock_cp, \
          patch("nanobot.config.loader.save_config") as mock_sc, \
-         patch("nanobot.config.loader.load_config") as mock_lc, \
+         patch("nanobot.config.loader.load_config"), \
          patch("nanobot.cli.commands.get_workspace_path") as mock_ws:
 
         base_dir = Path("./test_onboard_data")
@@ -54,6 +56,10 @@ def test_onboard_fresh_install(mock_paths):
     assert "Created config" in result.stdout
     assert "Created workspace" in result.stdout
     assert "nanobot is ready" in result.stdout
+    assert "agents.defaults.provider" in result.stdout
+    assert "provider_name" in result.stdout
+    assert "agents.defaults.model" in result.stdout
+    assert "model_name" in result.stdout
     assert config_file.exists()
     assert (workspace_dir / "AGENTS.md").exists()
     assert (workspace_dir / "memory" / "MEMORY.md").exists()
@@ -100,18 +106,18 @@ def test_onboard_existing_workspace_safe_create(mock_paths):
     assert (workspace_dir / "AGENTS.md").exists()
 
 
-def test_config_matches_github_copilot_codex_with_hyphen_prefix():
+def test_config_returns_explicit_provider_name():
     config = Config()
-    config.agents.defaults.model = "github-copilot/gpt-5.3-codex"
+    config.agents.defaults.provider = "github_copilot"
 
     assert config.get_provider_name() == "github_copilot"
 
 
-def test_config_matches_openai_codex_with_hyphen_prefix():
+def test_config_returns_explicit_provider_config():
     config = Config()
-    config.agents.defaults.model = "openai-codex/gpt-5.1-codex"
+    config.agents.defaults.provider = "openai_compatible"
 
-    assert config.get_provider_name() == "openai_codex"
+    assert config.get_provider() == config.providers.openai_compatible
 
 
 def test_find_by_model_prefers_explicit_prefix_over_generic_codex_keyword():
@@ -129,9 +135,173 @@ def test_litellm_provider_canonicalizes_github_copilot_hyphen_prefix():
     assert resolved == "github_copilot/gpt-5.3-codex"
 
 
+def test_litellm_provider_routes_anthropic_compatible_native_model_ids() -> None:
+    provider = LiteLLMProvider(
+        default_model="claude-3-5-sonnet",
+        provider_name="anthropic_compatible",
+    )
+
+    resolved = provider._resolve_model("claude-3-5-sonnet")
+
+    assert resolved == "anthropic/claude-3-5-sonnet"
+
+
 def test_openai_codex_strip_prefix_supports_hyphen_and_underscore():
     assert _strip_model_prefix("openai-codex/gpt-5.1-codex") == "gpt-5.1-codex"
     assert _strip_model_prefix("openai_codex/gpt-5.1-codex") == "gpt-5.1-codex"
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "model", "api_base", "missing_field"),
+    [
+        ("openai_compatible", "gpt-4o", "http://localhost:8000/v1", "api_key"),
+        ("openai_compatible", "gpt-4o", None, "api_base"),
+        ("anthropic_compatible", "claude-3-5-sonnet", "http://localhost:8001", "api_key"),
+        ("anthropic_compatible", "claude-3-5-sonnet", None, "api_base"),
+    ],
+)
+def test_make_provider_requires_complete_compatible_provider_config(
+    provider_name: str,
+    model: str,
+    api_base: str | None,
+    missing_field: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = Config()
+    config.agents.defaults.provider = provider_name
+    config.agents.defaults.model = model
+    provider_config = getattr(config.providers, provider_name)
+    if missing_field != "api_key":
+        provider_config.api_key = "test-key"
+    if api_base is not None:
+        provider_config.api_base = api_base
+
+    with pytest.raises(click.exceptions.Exit) as exc:
+        _make_provider(config)
+
+    assert exc.value.exit_code == 1
+    output = capsys.readouterr().out
+    assert f"Incomplete {provider_name} provider configuration" in output
+    assert f"providers.{provider_name}.{missing_field}" in output
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "model", "api_base", "provider_cls"),
+    [
+        ("openai_compatible", "gpt-4o", "http://localhost:8000/v1", CustomProvider),
+        ("anthropic_compatible", "claude-3-5-sonnet", "http://localhost:8001", LiteLLMProvider),
+    ],
+)
+def test_make_provider_uses_compatible_providers_with_native_model_ids(
+    provider_name: str,
+    model: str,
+    api_base: str,
+    provider_cls: type,
+) -> None:
+    config = Config()
+    config.agents.defaults.model = model
+    config.agents.defaults.provider = provider_name
+    provider_config = getattr(config.providers, provider_name)
+    provider_config.api_key = "test-key"
+    provider_config.api_base = api_base
+
+    provider = _make_provider(config)
+
+    assert isinstance(provider, provider_cls)
+    assert provider.default_model == model
+    if provider_name == "openai_compatible":
+        assert provider.api_key == "test-key"
+        assert provider.api_base == api_base
+    else:
+        assert provider.provider_name == "anthropic_compatible"
+        assert provider._resolve_model(model) == "anthropic/claude-3-5-sonnet"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openai/gpt-4o",
+        "openai-compatible/gpt-4o",
+        "anthropic/claude-opus-4-5",
+    ],
+)
+def test_make_provider_rejects_provider_prefixed_openai_compatible_models(
+    model: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = Config()
+    config.agents.defaults.provider = "openai_compatible"
+    config.agents.defaults.model = model
+    config.providers.openai_compatible.api_key = "test-key"
+    config.providers.openai_compatible.api_base = "http://localhost:8000/v1"
+
+    with pytest.raises(click.exceptions.Exit) as exc:
+        _make_provider(config)
+
+    assert exc.value.exit_code == 1
+    output = capsys.readouterr().out
+    assert "Invalid model for openai_compatible provider" in output
+    assert "agents.defaults.model" in output
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "anthropic/claude-opus-4-5",
+        "anthropic-compatible/claude-opus-4-5",
+        "openai/gpt-4o",
+    ],
+)
+def test_make_provider_rejects_provider_prefixed_anthropic_compatible_models(
+    model: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = Config()
+    config.agents.defaults.provider = "anthropic_compatible"
+    config.agents.defaults.model = model
+    config.providers.anthropic_compatible.api_key = "test-key"
+    config.providers.anthropic_compatible.api_base = "http://localhost:8001"
+
+    with pytest.raises(click.exceptions.Exit) as exc:
+        _make_provider(config)
+
+    assert exc.value.exit_code == 1
+    output = capsys.readouterr().out
+    assert "Invalid model for anthropic_compatible provider" in output
+    assert "agents.defaults.model" in output
+
+
+@pytest.mark.parametrize("provider_name", ["openai_compatible", "anthropic_compatible"])
+def test_make_provider_requires_explicit_model_for_compatible_providers(
+    provider_name: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = Config()
+    config.agents.defaults.provider = provider_name
+    getattr(config.providers, provider_name).api_key = "test-key"
+    getattr(config.providers, provider_name).api_base = "http://localhost:8000/v1"
+
+    with pytest.raises(click.exceptions.Exit) as exc:
+        _make_provider(config)
+
+    assert exc.value.exit_code == 1
+    output = capsys.readouterr().out
+    assert f"Missing model for {provider_name} provider" in output
+    assert "agents.defaults.model" in output
+
+
+def test_make_provider_requires_explicit_provider_selection(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = Config()
+
+    with pytest.raises(click.exceptions.Exit) as exc:
+        _make_provider(config)
+
+    assert exc.value.exit_code == 1
+    output = capsys.readouterr().out
+    assert "Missing provider selection" in output
+    assert "agents.defaults.provider" in output or "openai_compatible" in output
 
 
 @pytest.fixture
@@ -287,12 +457,12 @@ def test_gateway_uses_workspace_from_config_by_default(monkeypatch, tmp_path: Pa
     )
     monkeypatch.setattr(
         "nanobot.cli.commands._make_provider",
-        lambda _config: (_ for _ in ()).throw(_StopGateway("stop")),
+        lambda _config: (_ for _ in ()).throw(_StopGatewayError("stop")),
     )
 
     result = runner.invoke(app, ["gateway", "--config", str(config_file)])
 
-    assert isinstance(result.exception, _StopGateway)
+    assert isinstance(result.exception, _StopGatewayError)
     assert seen["config_path"] == config_file.resolve()
     assert seen["workspace"] == Path(config.agents.defaults.workspace)
 
@@ -315,7 +485,7 @@ def test_gateway_workspace_option_overrides_config(monkeypatch, tmp_path: Path) 
     )
     monkeypatch.setattr(
         "nanobot.cli.commands._make_provider",
-        lambda _config: (_ for _ in ()).throw(_StopGateway("stop")),
+        lambda _config: (_ for _ in ()).throw(_StopGatewayError("stop")),
     )
 
     result = runner.invoke(
@@ -323,7 +493,7 @@ def test_gateway_workspace_option_overrides_config(monkeypatch, tmp_path: Path) 
         ["gateway", "--config", str(config_file), "--workspace", str(override)],
     )
 
-    assert isinstance(result.exception, _StopGateway)
+    assert isinstance(result.exception, _StopGatewayError)
     assert seen["workspace"] == override
     assert config.workspace_path == override
 
@@ -348,11 +518,11 @@ def test_gateway_uses_config_directory_for_cron_store(monkeypatch, tmp_path: Pat
     class _StopCron:
         def __init__(self, store_path: Path) -> None:
             seen["cron_store"] = store_path
-            raise _StopGateway("stop")
+            raise _StopGatewayError("stop")
 
     monkeypatch.setattr("nanobot.cron.service.CronService", _StopCron)
 
     result = runner.invoke(app, ["gateway", "--config", str(config_file)])
 
-    assert isinstance(result.exception, _StopGateway)
+    assert isinstance(result.exception, _StopGatewayError)
     assert seen["cron_store"] == config_file.parent / "cron" / "jobs.json"
