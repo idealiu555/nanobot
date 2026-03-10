@@ -38,7 +38,6 @@ check "Model:"
 check "OpenAI-Compatible:"
 check "Anthropic-Compatible:"
 check "OpenAI Codex:"
-check "Github Copilot:"
 
 echo ""
 if $PASS; then

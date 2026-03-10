@@ -26,7 +26,7 @@ def _short_tool_id() -> str:
 
 class LiteLLMProvider(LLMProvider):
     """
-    LLM provider using LiteLLM for Anthropic-compatible and GitHub Copilot models.
+    LLM provider using LiteLLM for Anthropic-compatible models.
     """
 
     def __init__(
@@ -82,7 +82,7 @@ class LiteLLMProvider(LLMProvider):
 
     @staticmethod
     def _canonicalize_explicit_prefix(model: str, spec_name: str, canonical_prefix: str) -> str:
-        """Normalize explicit provider prefixes like `github-copilot/...`."""
+        """Normalize explicit provider prefixes like `anthropic-compatible/...`."""
         if "/" not in model:
             return model
         prefix, remainder = model.split("/", 1)
@@ -240,7 +240,7 @@ class LiteLLMProvider(LLMProvider):
         content = message.content
         finish_reason = choice.finish_reason
 
-        # Some providers (e.g. GitHub Copilot) split content and tool_calls
+        # Some providers split content and tool_calls
         # across multiple choices. Merge them so tool_calls are not lost.
         raw_tool_calls = []
         for ch in response.choices:

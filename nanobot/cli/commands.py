@@ -173,6 +173,61 @@ def onboard():
     from nanobot.config.loader import get_config_path, load_config, save_config
     from nanobot.config.schema import Config
 
+    def _configure_provider(config: Config) -> Config:
+        provider_choices = {
+            1: "openai_compatible",
+            2: "anthropic_compatible",
+            3: "openai_codex",
+        }
+        provider_labels = {
+            1: "openai_compatible",
+            2: "anthropic_compatible",
+            3: "openai_codex (oauth)",
+        }
+        default_choice = {
+            "openai_compatible": 1,
+            "anthropic_compatible": 2,
+            "openai_codex": 3,
+        }.get(config.agents.defaults.provider, 1)
+
+        console.print("\nProvider setup:")
+        for idx in range(1, 4):
+            console.print(f"  {idx}. {provider_labels[idx]}")
+
+        choice_text = typer.prompt("Select provider [1-3]", default=str(default_choice)).strip()
+        if not choice_text.isdigit() or int(choice_text) not in provider_choices:
+            console.print("[yellow]Invalid provider selection, fallback to openai_compatible.[/yellow]")
+            choice = 1
+        else:
+            choice = int(choice_text)
+
+        provider_name = provider_choices[choice]
+        config.agents.defaults.provider = provider_name
+
+        model_default = (config.agents.defaults.model or "").strip()
+        if model_default in {"", "model_name"}:
+            if provider_name == "openai_codex":
+                model_default = "openai_codex/gpt-5.1-codex"
+            elif provider_name == "anthropic_compatible":
+                model_default = "claude-3-5-sonnet"
+            else:
+                model_default = "gpt-4o"
+        config.agents.defaults.model = typer.prompt(
+            "Model ID (backend native ID)",
+            default=model_default,
+        ).strip()
+
+        if provider_name in {"openai_compatible", "anthropic_compatible"}:
+            provider_config = getattr(config.providers, provider_name)
+            current_key = (provider_config.api_key or "").strip()
+            current_base = (provider_config.api_base or "").strip()
+            config_key = typer.prompt("API key", default=current_key, hide_input=True).strip()
+            config_base = typer.prompt("API base", default=current_base).strip()
+            provider_config.api_key = config_key
+            provider_config.api_base = config_base
+
+        return config
+
     config_path = get_config_path()
 
     if config_path.exists():
@@ -181,14 +236,21 @@ def onboard():
         console.print("  [bold]N[/bold] = refresh config, keeping existing values and adding new fields")
         if typer.confirm("Overwrite?"):
             config = Config()
+            if sys.stdin.isatty():
+                config = _configure_provider(config)
             save_config(config)
             console.print(f"[green]✓[/green] Config reset to defaults at {config_path}")
         else:
             config = load_config()
+            if sys.stdin.isatty():
+                config = _configure_provider(config)
             save_config(config)
             console.print(f"[green]✓[/green] Config refreshed at {config_path} (existing values preserved)")
     else:
-        save_config(Config())
+        config = Config()
+        if sys.stdin.isatty():
+            config = _configure_provider(config)
+        save_config(config)
         console.print(f"[green]✓[/green] Created config at {config_path}")
 
     # Create workspace
@@ -202,10 +264,13 @@ def onboard():
 
     console.print(f"\n{__logo__} nanobot is ready!")
     console.print("\nNext steps:")
-    console.print("  1. Add your API key to [cyan]~/.nanobot/config.json[/cyan]")
+    console.print("  1. Verify provider/model in [cyan]~/.nanobot/config.json[/cyan]")
     console.print(
-        "     Set agents.defaults.provider from provider_name to a supported provider,"
-        " then configure that provider's api_key + api_base."
+        "     Set agents.defaults.provider from provider_name to a supported provider."
+    )
+    console.print(
+        "     Compatible providers need api_key + api_base."
+        " OAuth providers (openai_codex) do not use these fields."
     )
     console.print(
         "     Also set agents.defaults.model from model_name to a backend-supported model ID."
@@ -270,14 +335,14 @@ def _make_provider(config: Config):
             console.print("[red]Error: Missing provider selection.[/red]")
             console.print(
                 "Set agents.defaults.provider to one of: openai_compatible, "
-                "anthropic_compatible, openai_codex, github_copilot."
+                "anthropic_compatible, openai_codex."
             )
             raise typer.Exit(1)
         if not find_by_name(provider_name):
             console.print(f"[red]Error: Unknown provider: {provider_name}[/red]")
             console.print(
                 "Supported providers: openai_compatible, anthropic_compatible, "
-                "openai_codex, github_copilot."
+                "openai_codex."
             )
             raise typer.Exit(1)
 
@@ -311,18 +376,8 @@ def _make_provider(config: Config):
             provider_name=provider_name,
         )
 
-    spec = find_by_name(provider_name)
-    if not model.startswith("bedrock/") and not (p and p.api_key) and not (spec and spec.is_oauth):
-        console.print("[red]Error: No API key configured.[/red]")
-        console.print("Set one in ~/.nanobot/config.json under providers section")
-        raise typer.Exit(1)
-
-    return LiteLLMProvider(
-        api_key=p.api_key if p else None,
-        api_base=p.api_base if p else None,
-        default_model=model,
-        provider_name=provider_name,
-    )
+    # All supported providers should have returned above.
+    raise RuntimeError(f"Unsupported provider branch reached: {provider_name}")
 
 
 def _load_runtime_config(config: str | None = None, workspace: str | None = None) -> Config:
@@ -748,13 +803,13 @@ def channels_status():
         tg_config
     )
 
-    # DingTalk
-    dt = config.channels.dingtalk
-    dt_config = f"client_id: {dt.client_id[:10]}..." if dt.client_id else "[dim]not configured[/dim]"
+    # Feishu
+    fs = config.channels.feishu
+    fs_config = f"app_id: {fs.app_id[:10]}..." if fs.app_id else "[dim]not configured[/dim]"
     table.add_row(
-        "DingTalk",
-        "✓" if dt.enabled else "✗",
-        dt_config
+        "Feishu",
+        "✓" if fs.enabled else "✗",
+        fs_config,
     )
 
     # QQ
@@ -764,15 +819,6 @@ def channels_status():
         "QQ",
         "✓" if qq.enabled else "✗",
         qq_config
-    )
-
-    # Email
-    em = config.channels.email
-    em_config = em.imap_host if em.imap_host else "[dim]not configured[/dim]"
-    table.add_row(
-        "Email",
-        "✓" if em.enabled else "✗",
-        em_config
     )
 
     console.print(table)
@@ -805,10 +851,11 @@ def status():
         # Check API keys from registry
         for spec in PROVIDERS:
             p = getattr(config.providers, spec.name, None)
-            if p is None:
-                continue
             if spec.is_oauth:
                 console.print(f"{spec.label}: [green]✓ (OAuth)[/green]")
+                continue
+            if p is None:
+                continue
             elif spec.name in {"openai_compatible", "anthropic_compatible"}:
                 has_key = bool(p.api_key.strip())
                 has_base = bool((p.api_base or "").strip())
@@ -843,7 +890,7 @@ def _register_login(name: str):
 
 @provider_app.command("login")
 def provider_login(
-    provider: str = typer.Argument(..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"),
+    provider: str = typer.Argument(..., help="OAuth provider (e.g. 'openai-codex')"),
 ):
     """Authenticate with an OAuth provider."""
     from nanobot.providers.registry import PROVIDERS
@@ -885,24 +932,6 @@ def _login_openai_codex() -> None:
         console.print(f"[green]✓ Authenticated with OpenAI Codex[/green]  [dim]{token.account_id}[/dim]")
     except ImportError:
         console.print("[red]oauth_cli_kit not installed. Run: pip install oauth-cli-kit[/red]")
-        raise typer.Exit(1)
-
-
-@_register_login("github_copilot")
-def _login_github_copilot() -> None:
-    import asyncio
-
-    console.print("[cyan]Starting GitHub Copilot device flow...[/cyan]\n")
-
-    async def _trigger():
-        from litellm import acompletion
-        await acompletion(model="github_copilot/gpt-4o", messages=[{"role": "user", "content": "hi"}], max_tokens=1)
-
-    try:
-        asyncio.run(_trigger())
-        console.print("[green]✓ Authenticated with GitHub Copilot[/green]")
-    except Exception as e:
-        console.print(f"[red]Authentication error: {e}[/red]")
         raise typer.Exit(1)
 
 

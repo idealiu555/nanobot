@@ -93,6 +93,11 @@ Your workspace is at: {workspace_path}
 - After writing or editing a file, re-read it if accuracy matters.
 - If a tool call fails, analyze the error before retrying with a different approach.
 - Ask for clarification when the request is ambiguous.
+- For image/logo download requests, use this workflow:
+  1) Call `image_search` first to get candidate image URLs.
+  2) Use `exec` only for downloading selected URLs.
+  3) Validate the downloaded file before sending: reject HTTP error pages, `text/html`, and non-image magic bytes.
+  4) If validation fails, retry with another candidate URL instead of sending the invalid file.
 
 Reply directly with text for conversations. Only use the 'message' tool to send to a specific chat channel."""
 

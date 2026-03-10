@@ -17,7 +17,7 @@ class ChannelManager:
     Manages chat channels and coordinates message routing.
 
     Responsibilities:
-    - Initialize enabled channels (Telegram, DingTalk, Email, QQ, etc.)
+    - Initialize enabled channels (Telegram, Feishu, QQ, etc.)
     - Start/stop channels
     - Route outbound messages
     """
@@ -45,27 +45,17 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning("Telegram channel not available: {}", e)
 
-        # DingTalk channel
-        if self.config.channels.dingtalk.enabled:
+        # Feishu channel
+        if self.config.channels.feishu.enabled:
             try:
-                from nanobot.channels.dingtalk import DingTalkChannel
-                self.channels["dingtalk"] = DingTalkChannel(
-                    self.config.channels.dingtalk, self.bus
+                from nanobot.channels.feishu import FeishuChannel
+                self.channels["feishu"] = FeishuChannel(
+                    self.config.channels.feishu,
+                    self.bus,
                 )
-                logger.info("DingTalk channel enabled")
+                logger.info("Feishu channel enabled")
             except ImportError as e:
-                logger.warning("DingTalk channel not available: {}", e)
-
-        # Email channel
-        if self.config.channels.email.enabled:
-            try:
-                from nanobot.channels.email import EmailChannel
-                self.channels["email"] = EmailChannel(
-                    self.config.channels.email, self.bus
-                )
-                logger.info("Email channel enabled")
-            except ImportError as e:
-                logger.warning("Email channel not available: {}", e)
+                logger.warning("Feishu channel not available: {}", e)
 
         # QQ channel
         if self.config.channels.qq.enabled:

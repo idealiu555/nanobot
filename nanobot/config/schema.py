@@ -26,47 +26,16 @@ class TelegramConfig(Base):
     reply_to_message: bool = False  # If true, bot replies quote the original message
 
 
-class DingTalkConfig(Base):
-    """DingTalk channel configuration using Stream mode."""
+class FeishuConfig(Base):
+    """Feishu/Lark channel configuration using WebSocket long connection."""
 
     enabled: bool = False
-    client_id: str = ""  # AppKey
-    client_secret: str = ""  # AppSecret
-    allow_from: list[str] = Field(default_factory=list)  # Allowed staff_ids
-
-
-class EmailConfig(Base):
-    """Email channel configuration (IMAP inbound + SMTP outbound)."""
-
-    enabled: bool = False
-    consent_granted: bool = False  # Explicit owner permission to access mailbox data
-
-    # IMAP (receive)
-    imap_host: str = ""
-    imap_port: int = 993
-    imap_username: str = ""
-    imap_password: str = ""
-    imap_mailbox: str = "INBOX"
-    imap_use_ssl: bool = True
-
-    # SMTP (send)
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_username: str = ""
-    smtp_password: str = ""
-    smtp_use_tls: bool = True
-    smtp_use_ssl: bool = False
-    from_address: str = ""
-
-    # Behavior
-    auto_reply_enabled: bool = (
-        True  # If false, inbound email is read but no automatic reply is sent
-    )
-    poll_interval_seconds: int = 30
-    mark_seen: bool = True
-    max_body_chars: int = 12000
-    subject_prefix: str = "Re: "
-    allow_from: list[str] = Field(default_factory=list)  # Allowed sender email addresses
+    app_id: str = ""  # App ID from Feishu Open Platform
+    app_secret: str = ""  # App Secret from Feishu Open Platform
+    encrypt_key: str = ""  # Encrypt Key for event subscription (optional)
+    verification_token: str = ""  # Verification Token for event subscription (optional)
+    allow_from: list[str] = Field(default_factory=list)  # Allowed sender open_ids
+    react_emoji: str = "THUMBSUP"  # Optional reaction emoji for received messages
 
 
 class QQConfig(Base):
@@ -86,10 +55,9 @@ class ChannelsConfig(Base):
     """Configuration for chat channels."""
 
     send_progress: bool = True  # stream agent's text progress to the channel
-    send_tool_hints: bool = False  # stream tool-call hints (e.g. read_file("…"))
+    send_tool_hints: bool = True  # stream tool-call hints (e.g. read_file("…"))
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
-    dingtalk: DingTalkConfig = Field(default_factory=DingTalkConfig)
-    email: EmailConfig = Field(default_factory=EmailConfig)
+    feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     qq: QQConfig = Field(default_factory=QQConfig)
 
 
@@ -124,8 +92,6 @@ class ProvidersConfig(Base):
 
     openai_compatible: ProviderConfig = Field(default_factory=ProviderConfig)
     anthropic_compatible: ProviderConfig = Field(default_factory=ProviderConfig)
-    openai_codex: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenAI Codex (OAuth)
-    github_copilot: ProviderConfig = Field(default_factory=ProviderConfig)  # Github Copilot (OAuth)
 
 
 class HeartbeatConfig(Base):
@@ -203,16 +169,20 @@ class Config(BaseSettings):
 
     def _match_provider(
         self, model: str | None = None
-    ) -> tuple["ProviderConfig | None", str | None]:
+    ) -> tuple["BaseModel | None", str | None]:
         """Return the explicitly selected provider config and its registry name."""
         selected = (self.agents.defaults.provider or "").strip()
         if not selected or selected == "provider_name":
             return None, None
+        # OAuth-only providers like openai_codex are selected via agents.defaults.provider
+        # and do not require a providers.* config object.
+        if selected == "openai_codex":
+            return None, selected
         p = getattr(self.providers, selected, None)
         return (p, selected) if p else (None, None)
 
-    def get_provider(self, model: str | None = None) -> ProviderConfig | None:
-        """Get matched provider config (api_key, api_base). Falls back to first available."""
+    def get_provider(self, model: str | None = None) -> BaseModel | None:
+        """Get matched provider config object."""
         p, _ = self._match_provider(model)
         return p
 
@@ -224,13 +194,14 @@ class Config(BaseSettings):
     def get_api_key(self, model: str | None = None) -> str | None:
         """Get API key for the given model. Falls back to first available key."""
         p = self.get_provider(model)
-        return p.api_key if p else None
+        return getattr(p, "api_key", None) if p else None
 
     def get_api_base(self, model: str | None = None) -> str | None:
         """Get API base URL for the given model."""
-        p, name = self._match_provider(model)
-        if p and p.api_base:
-            return p.api_base
+        p, _ = self._match_provider(model)
+        api_base = getattr(p, "api_base", None) if p else None
+        if api_base:
+            return api_base
         return None
 
     model_config = ConfigDict(env_prefix="NANOBOT_", env_nested_delimiter="__")

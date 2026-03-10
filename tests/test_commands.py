@@ -108,9 +108,9 @@ def test_onboard_existing_workspace_safe_create(mock_paths):
 
 def test_config_returns_explicit_provider_name():
     config = Config()
-    config.agents.defaults.provider = "github_copilot"
+    config.agents.defaults.provider = "openai_codex"
 
-    assert config.get_provider_name() == "github_copilot"
+    assert config.get_provider_name() == "openai_codex"
 
 
 def test_config_returns_explicit_provider_config():
@@ -120,19 +120,19 @@ def test_config_returns_explicit_provider_config():
     assert config.get_provider() == config.providers.openai_compatible
 
 
-def test_find_by_model_prefers_explicit_prefix_over_generic_codex_keyword():
-    spec = find_by_model("github-copilot/gpt-5.3-codex")
+def test_find_by_model_matches_openai_codex_keyword():
+    spec = find_by_model("openai-codex/gpt-5.3-codex")
 
     assert spec is not None
-    assert spec.name == "github_copilot"
+    assert spec.name == "openai_codex"
 
 
-def test_litellm_provider_canonicalizes_github_copilot_hyphen_prefix():
-    provider = LiteLLMProvider(default_model="github-copilot/gpt-5.3-codex")
+def test_litellm_provider_canonicalizes_anthropic_compatible_hyphen_prefix():
+    provider = LiteLLMProvider(default_model="anthropic-compatible/claude-3-5-sonnet")
 
-    resolved = provider._resolve_model("github-copilot/gpt-5.3-codex")
+    resolved = provider._resolve_model("anthropic-compatible/claude-3-5-sonnet")
 
-    assert resolved == "github_copilot/gpt-5.3-codex"
+    assert resolved == "anthropic/claude-3-5-sonnet"
 
 
 def test_litellm_provider_routes_anthropic_compatible_native_model_ids() -> None:
@@ -526,3 +526,18 @@ def test_gateway_uses_config_directory_for_cron_store(monkeypatch, tmp_path: Pat
 
     assert isinstance(result.exception, _StopGatewayError)
     assert seen["cron_store"] == config_file.parent / "cron" / "jobs.json"
+
+
+def test_status_lists_openai_codex_as_oauth_provider(monkeypatch) -> None:
+    config = Config()
+    config.agents.defaults.provider = "openai_codex"
+    config.agents.defaults.model = "openai_codex/gpt-5.1-codex"
+
+    monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: Path(__file__))
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda: config)
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    assert "OpenAI Codex:" in result.stdout
+    assert "(OAuth)" in result.stdout

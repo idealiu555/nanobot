@@ -5,7 +5,6 @@ The current build intentionally supports only:
   - OpenAI-compatible APIs
   - Anthropic-compatible APIs
   - OpenAI Codex OAuth
-  - GitHub Copilot OAuth
 """
 
 from __future__ import annotations
@@ -54,15 +53,6 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         keywords=("openai-codex",),
         env_key="",
         display_name="OpenAI Codex",
-        is_oauth=True,
-    ),
-    ProviderSpec(
-        name="github_copilot",
-        keywords=("github_copilot", "copilot"),
-        env_key="",
-        display_name="Github Copilot",
-        litellm_prefix="github_copilot",
-        skip_prefixes=("github_copilot/",),
         is_oauth=True,
     ),
 )
